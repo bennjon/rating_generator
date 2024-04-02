@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT\n            driver.id as driver_id,\n            event_id,\n            eor.class as class,\n            race,\n            driver.rating,\n            position\n        FROM event_overall_ranking eor\n        LEFT JOIN driver ON\n        eor.class = ANY(driver.source_class)\n        AND eor.driver_name = ANY(driver.driver_display_name)\n        WHERE event_id = $1 AND eor.class = $2 AND race = $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "driver_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "event_id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 2,
+        "name": "class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "race",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "rating",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 5,
+        "name": "position",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "5fb2a9e0df9030995fcdda8e35ebd3753a055cf3ec0e5832d15e25a6e1d980eb"
+}

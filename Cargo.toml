@@ -1,0 +1,15 @@
+[package]
+name = "rating_generator"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sqlx = { version = "0.7.4", features = ["runtime-tokio-rustls","postgres"] }
+tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }
+anyhow = "1.0.81"
+skillratings = { version = "0.26.0", features = ["serde"] }
+log = "0.4.21"
+dotenv = "0.15.0"
+env_logger = "0.11.3"

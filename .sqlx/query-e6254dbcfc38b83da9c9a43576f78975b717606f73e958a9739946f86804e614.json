@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT DISTINCT class, race\n        FROM event_overall_ranking WHERE event_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "class",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "race",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e6254dbcfc38b83da9c9a43576f78975b717606f73e958a9739946f86804e614"
+}
