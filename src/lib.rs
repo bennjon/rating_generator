@@ -20,10 +20,11 @@ pub async fn run() -> Result<()> {
         .expect("Error connecting to database");
     let event_id = 430889;
     let event_results = get_event(event_id, &pool).await?;
-    recalculate_ratings(event_results)?;
+    recalculate_ratings(event_results, &pool).await?;
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 struct EventRaceInfoResponse {
     class: String,
     race: String
@@ -41,6 +42,7 @@ async fn get_event_races(event: i64, pool: &DB) -> Result<Vec<EventRaceInfoRespo
     Ok(event_results)
     }
 
+#[derive(Debug, Clone)]
 struct EventResultResponse {
     driver_id: i64,
     event_id: i64,
@@ -50,7 +52,9 @@ struct EventResultResponse {
     position: i64
 }
 
+#[derive(Debug, Clone)]
 struct EventResult {
+    event_id: i64,
     race: EventRaceInfoResponse,
     results: Vec<EventResultResponse>
 }
@@ -80,23 +84,41 @@ async fn get_event(event: i64, pool: &DB) -> Result<Vec<EventResult>> {
         race.race
         ).fetch_all(pool).await?;
 
-        event_results.push(EventResult{race, results: race_result});
+        event_results.push(EventResult{event_id: event, race, results: race_result});
     }
     Ok(event_results)
 }
 
-fn recalculate_ratings(event_results: Vec<EventResult>) -> Result<()> {
+async  fn recalculate_ratings(event_results: Vec<EventResult>, pool: &DB) -> Result<()> {
+    info!("Recalculating ratings for event {}", event_results[0].event_id);
     const DEFAULT_UNCERTAINTY: i64 = 25/3;
     for event_result in event_results {
         let mut teams_and_ranks: Vec<(Vec<WengLinRating>, MultiTeamOutcome)> = vec![];
-        for result in event_result.results {
+        for result in &event_result.results {
             let mut player_rating: Vec<WengLinRating> = vec![];
             player_rating.push(WengLinRating{rating: result.rating.unwrap_or(1000) as f64, uncertainty: DEFAULT_UNCERTAINTY as f64});
             let outcome = MultiTeamOutcome::new(result.position as usize);
             teams_and_ranks.push((player_rating, outcome));
         }
         let new_ratings = weng_lin_multi_team(&teams_and_ranks.iter().map(|(rating, outcome)| (rating.as_slice(), *outcome)).collect::<Vec<_>>(), &WengLinConfig::default());
-        info!("New ratings for {:?} {:?}: {:?}", event_result.race.class, event_result.race.race , new_ratings);
+        update_ratings(&event_result.clone(), &new_ratings, &pool).await?;
+    }
+    Ok(())
+}
+
+async fn update_ratings(event_result: &EventResult, new_ratings: &Vec<Vec<WengLinRating>>, pool: &DB) -> Result<()> {
+    for (i,rating) in new_ratings.iter().enumerate() {
+        let driver_id = event_result.results[i].driver_id as i32;
+        let new_rating = rating[0].rating as i64;
+        query!(
+            r#"
+            UPDATE driver
+            SET rating = $1
+            WHERE id = $2
+            "#,
+            new_rating,
+            driver_id
+        ).execute(pool).await?;
     }
     Ok(())
 }
