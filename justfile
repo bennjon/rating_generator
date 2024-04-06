@@ -17,3 +17,6 @@ run-release +FLAGS='-m':
 
 sleep:
     sleep 2
+
+format:
+    cargo fmt
