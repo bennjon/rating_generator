@@ -244,6 +244,43 @@ async fn update_ratings(
             .bind(driver_id)
             .execute(pool)
             .await?;
+        log_rating(
+            RatingLogRequest {
+                driver_id: driver_id,
+                event_id: event_result.event_id,
+                rating: new_rating,
+                uncertainty: player_uncertainty,
+                class: event_result.results[i].class.clone(),
+                rating_ts: chrono::Utc::now(),
+            },
+            pool,
+        ).await?;
     }
+    Ok(())
+}
+
+struct RatingLogRequest {
+    driver_id: i32,
+    event_id: i64,
+    rating: i64,
+    uncertainty: f64,
+    class: String,
+    rating_ts: chrono::DateTime<chrono::Utc>,
+}
+
+async fn log_rating(request: RatingLogRequest, pool: &DB) -> Result<()> {
+    let query = "
+        INSERT INTO driver_ratings (driver_id, event_id, rating, uncertainty, class, rating_ts)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ";
+    sqlx::query(query)
+        .bind(request.driver_id)
+        .bind(request.event_id)
+        .bind(request.rating)
+        .bind(request.uncertainty)
+        .bind(request.class)
+        .bind(request.rating_ts)
+        .execute(pool)
+        .await?;
     Ok(())
 }
