@@ -10,7 +10,6 @@ use skillratings::{
     weng_lin::{WengLinConfig, WengLinRating},
     MultiTeamOutcome,
 };
-use sqlx;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
@@ -137,6 +136,7 @@ struct EventResultResponse {
     class: String,
     race: String,
     rating: Option<i64>,
+    uncertainty: Option<f64>,
     position: i32,
 }
 
@@ -157,6 +157,7 @@ async fn get_event(event: i64, pool: &DB) -> Result<Vec<EventResult>> {
             eor.class as class,
             race,
             driver.rating,
+            driver.uncertainty,
             position
         FROM event_overall_ranking eor
         LEFT JOIN driver ON
@@ -191,15 +192,22 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: &DB) -> Resu
         "Recalculating ratings for event {}",
         event_results[0].event_id
     );
-    const DEFAULT_UNCERTAINTY: i64 = 25 / 3;
+
     for event_result in event_results {
         let mut teams_and_ranks: Vec<(Vec<WengLinRating>, MultiTeamOutcome)> = vec![];
         for result in &event_result.results {
             let mut player_rating: Vec<WengLinRating> = vec![];
-            player_rating.push(WengLinRating {
-                rating: result.rating.unwrap_or(1000) as f64,
-                uncertainty: DEFAULT_UNCERTAINTY as f64,
-            });
+            match result.rating {
+                Some(_) => {
+                    player_rating.push(WengLinRating {
+                        rating: result.rating.unwrap() as f64,
+                        uncertainty: result.uncertainty.unwrap(),
+                    });
+                }
+                None => {
+                    player_rating.push(WengLinRating::default());
+                }
+            }
             let outcome = MultiTeamOutcome::new(result.position as usize);
             teams_and_ranks.push((player_rating, outcome));
         }
@@ -221,15 +229,18 @@ async fn update_ratings(
     pool: &DB,
 ) -> Result<()> {
     for (i, rating) in new_ratings.iter().enumerate() {
-        let driver_id = event_result.results[i].driver_id as i32;
+        let driver_id = event_result.results[i].driver_id;
         let new_rating = rating[0].rating as i64;
+        let player_uncertainty = rating[0].uncertainty;
         let query = "
             UPDATE driver
-            SET rating = $1
-            WHERE id = $2
+            SET rating = $1,
+            uncertainty = $2
+            WHERE id = $3
             ";
         sqlx::query(query)
             .bind(new_rating)
+            .bind(player_uncertainty)
             .bind(driver_id)
             .execute(pool)
             .await?;
