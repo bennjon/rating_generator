@@ -36,11 +36,12 @@ pub async fn run() -> Result<()> {
 
     if config.event_id.is_some() {
         let queue = Arc::new(DbQueue::new(pool.clone()));
+        let event_id = config.event_id.unwrap();
         let job = Message::GenerateRatings {
-            event_id: config.event_id.unwrap(),
+            event_id,
         };
 
-        let _ = queue.push(job, MessageScope::GenerateRatings, None).await?;
+        let _ = queue.push(job, MessageScope::GenerateRatings, Some(event_id), None).await?;
         queue.heartbeat(MessageScope::GenerateRatings).await?;
     } else if config.run {
         queue.heartbeat(MessageScope::GenerateRatings).await?;
