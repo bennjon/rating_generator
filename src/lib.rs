@@ -5,9 +5,8 @@ use dotenv::dotenv;
 use futures::{stream, StreamExt};
 use log::{error, info, warn};
 use serde::Serialize;
-use skillratings::weng_lin::weng_lin_multi_team;
 use skillratings::{
-    weng_lin::{WengLinConfig, WengLinRating},
+    weng_lin::{weng_lin_multi_team, WengLinConfig, WengLinRating},
     MultiTeamOutcome,
 };
 use std::env;
@@ -188,6 +187,14 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Resul
 
     for event_result in event_results {
         let mut teams_and_ranks: Vec<(Vec<WengLinRating>, MultiTeamOutcome)> = vec![];
+        let config = WengLinConfig{
+            beta: 25.0 / 20.0,
+            uncertainty_tolerance: 0.000_001,
+        };
+        let default_rating = WengLinRating{
+            rating: 500.0,
+            uncertainty: 500.0 / 3.0,
+        };
         for result in &event_result.results {
             let mut player_rating: Vec<WengLinRating> = vec![];
             match result.rating {
@@ -198,10 +205,7 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Resul
                     });
                 }
                 None => {
-                    player_rating.push(WengLinRating {
-                        rating: 500.0,
-                        uncertainty: 250.0 / 3.0,
-                    });
+                    player_rating.push(default_rating.clone());
                 }
             }
             let outcome = MultiTeamOutcome::new(result.position as usize);
@@ -212,7 +216,7 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Resul
                 .iter()
                 .map(|(rating, outcome)| (rating.as_slice(), *outcome))
                 .collect::<Vec<_>>(),
-            &WengLinConfig::default(),
+            &config,
         );
         update_ratings(&event_result.clone(), &new_ratings, pool.clone()).await?;
     }
