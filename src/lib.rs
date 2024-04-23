@@ -3,7 +3,7 @@ use anyhow::Result;
 use db::{connect, DB};
 use dotenv::dotenv;
 use futures::{stream, StreamExt};
-use log::{info, warn};
+use log::{error, info, warn};
 use serde::Serialize;
 use skillratings::weng_lin::weng_lin_multi_team;
 use skillratings::{
@@ -37,16 +37,13 @@ pub async fn run() -> Result<()> {
     if config.event_id.is_some() {
         let queue = Arc::new(DbQueue::new(pool.clone()));
         let event_id = config.event_id.unwrap();
-        let job = Message::GenerateRatings {
-            event_id,
-        };
+        let job = Message::GenerateRatings { event_id };
 
-        let _ = queue.push(job, MessageScope::GenerateRatings, Some(event_id), None).await?;
-        queue.heartbeat(MessageScope::GenerateRatings).await?;
-    } else if config.run {
-        queue.heartbeat(MessageScope::GenerateRatings).await?;
+        queue
+            .push(job, MessageScope::GenerateRatings, Some(event_id), None)
+            .await?
     }
-
+    queue.heartbeat(MessageScope::GenerateRatings).await?;
     Ok(())
 }
 
@@ -73,21 +70,16 @@ async fn run_worker(queue: Arc<dyn Queue>) {
             .for_each_concurrent(CONCURRENCY, |job| async {
                 let job_id = job.id;
 
-                let res = match process_job(job).await {
+                let _res = match process_job(job).await {
                     Ok(_) => {
                         info!("Job {} completed", job_id);
                         queue.delete_job(job_id).await
                     }
                     Err(e) => {
-                        warn!("Job {} failed: {}", job_id, e);
+                        error!("Job {} failed: {}", job_id, e);
                         queue.fail_job(job_id).await
                     }
                 };
-
-                match res {
-                    Ok(_) => {}
-                    Err(e) => warn!("deleting / failing job: {}", e),
-                }
             })
             .await;
         tokio::time::sleep(Duration::from_millis(125)).await;
@@ -95,17 +87,12 @@ async fn run_worker(queue: Arc<dyn Queue>) {
 }
 
 async fn process_job(job: Job) -> Result<()> {
-    let pool = connect(&env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
-        .await
-        .expect("Error connecting to database");
+    let pool = connect(&env::var("DATABASE_URL")?).await?;
     let message_clone = job.message.clone();
-    match job.message {
-        Message::GenerateRatings { event_id } => {
-            info!("Processing job: {:?}", message_clone);
-            let event_results = get_event(event_id, &pool).await?;
-            recalculate_ratings(event_results, &pool).await?;
-        }
-        _ => {}
+    if let Message::GenerateRatings { event_id } = job.message {
+        info!("Processing job: {:?}", message_clone);
+        let event_results = get_event(event_id, &pool).await?;
+        recalculate_ratings(event_results, pool).await?;
     };
     Ok(())
 }
@@ -185,8 +172,8 @@ async fn get_event(event: i64, pool: &DB) -> Result<Vec<EventResult>> {
     Ok(event_results)
 }
 
-async fn recalculate_ratings(event_results: Vec<EventResult>, pool: &DB) -> Result<()> {
-    if event_results.len() == 0 {
+async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Result<()> {
+    if event_results.is_empty() {
         return Ok(());
     }
     info!(
@@ -219,15 +206,15 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: &DB) -> Resu
                 .collect::<Vec<_>>(),
             &WengLinConfig::default(),
         );
-        update_ratings(&event_result.clone(), &new_ratings, &pool).await?;
+        update_ratings(&event_result.clone(), &new_ratings, pool.clone()).await?;
     }
     Ok(())
 }
 
 async fn update_ratings(
     event_result: &EventResult,
-    new_ratings: &Vec<Vec<WengLinRating>>,
-    pool: &DB,
+    new_ratings: &[Vec<WengLinRating>],
+    pool: DB,
 ) -> Result<()> {
     for (i, rating) in new_ratings.iter().enumerate() {
         let driver_id = event_result.results[i].driver_id;
@@ -243,19 +230,20 @@ async fn update_ratings(
             .bind(new_rating)
             .bind(player_uncertainty)
             .bind(driver_id)
-            .execute(pool)
+            .execute(&pool)
             .await?;
         log_rating(
             RatingLogRequest {
-                driver_id: driver_id,
+                driver_id,
                 event_id: event_result.event_id,
                 rating: new_rating,
                 uncertainty: player_uncertainty,
                 class: event_result.results[i].class.clone(),
                 rating_ts: chrono::Utc::now(),
             },
-            pool,
-        ).await?;
+            &pool,
+        )
+        .await?;
     }
     Ok(())
 }

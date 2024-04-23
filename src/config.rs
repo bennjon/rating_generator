@@ -11,7 +11,12 @@ pub struct Config {
 
 impl Config {
     pub fn new() -> Config {
-        let args = Config::parse();
-        args
+        Config::parse()
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
     }
 }
