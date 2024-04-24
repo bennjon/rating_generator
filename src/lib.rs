@@ -18,6 +18,7 @@ use task_queue::queue::{Job, Message, MessageScope, Queue};
 
 pub mod config;
 pub mod db;
+mod refresh;
 
 const CONCURRENCY: usize = 1;
 
@@ -34,14 +35,18 @@ pub async fn run() -> Result<()> {
     let worker_queue = queue.clone(); // queue is an Arc pointer, so we only copy the reference
     tokio::spawn(async move { run_worker(worker_queue).await });
 
+    let queue = Arc::new(DbQueue::new(pool.clone()));
+
     if config.event_id.is_some() {
-        let queue = Arc::new(DbQueue::new(pool.clone()));
         let event_id = config.event_id.unwrap();
         let job = Message::GenerateRatings { event_id };
 
         queue
+            .clone()
             .push(job, MessageScope::GenerateRatings, Some(event_id), None)
             .await?
+    } else if config.refresh {
+        refresh::refresh_ratings(&pool, queue.clone()).await?;
     }
     queue.heartbeat(MessageScope::GenerateRatings).await?;
     Ok(())
@@ -193,7 +198,10 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Resul
                     });
                 }
                 None => {
-                    player_rating.push(WengLinRating::default());
+                    player_rating.push(WengLinRating {
+                        rating: 500.0,
+                        uncertainty: 250.0 / 3.0,
+                    });
                 }
             }
             let outcome = MultiTeamOutcome::new(result.position as usize);

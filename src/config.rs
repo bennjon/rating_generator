@@ -7,11 +7,24 @@ pub struct Config {
     pub run: bool,
     #[clap(short, long)]
     pub event_id: Option<i64>,
+    #[clap(long)]
+    pub refresh: bool,
 }
 
 impl Config {
     pub fn new() -> Config {
-        Config::parse()
+        let args = Config::parse();
+
+        if args.event_id.is_some() && args.run {
+            panic!("Event id and run are mutually exclusive");
+        }
+        if args.event_id.is_some() && args.refresh {
+            panic!("Event id and refresh are mutually exclusive");
+        }
+        if args.run && args.refresh {
+            panic!("Run and refresh are mutually exclusive");
+        }
+        args
     }
 }
 
