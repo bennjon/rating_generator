@@ -7,7 +7,7 @@ use task_queue::queue::{Message, MessageScope, Queue};
 pub(crate) async fn refresh_ratings(pool: &DB, queue: Arc<DbQueue>) -> Result<()> {
     reset_drivers(pool).await?;
     reset_driver_ratings(pool).await?;
-    let events = find_event(pool).await?;
+    let events = find_events(pool).await?;
     generate_jobs(events, queue).await?;
     Ok(())
 }
@@ -29,7 +29,7 @@ struct EventResponse {
     id: i64,
 }
 
-async fn find_event(pool: &DB) -> Result<Vec<EventResponse>> {
+async fn find_events(pool: &DB) -> Result<Vec<EventResponse>> {
     let query = "SELECT DISTINCT id FROM event";
     let events = sqlx::query_as(query).fetch_all(pool).await?;
     Ok(events)

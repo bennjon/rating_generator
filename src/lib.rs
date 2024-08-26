@@ -104,12 +104,11 @@ async fn process_job(job: Job) -> Result<()> {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 struct EventRaceInfoResponse {
     class: String,
-    race: String,
 }
 
-async fn get_event_races(event: i64, pool: &DB) -> Result<Vec<EventRaceInfoResponse>> {
+async fn get_event_classes(event: i64, pool: &DB) -> Result<Vec<EventRaceInfoResponse>> {
     let query = "
-        SELECT DISTINCT class, race
+        SELECT DISTINCT class
         FROM event_overall_ranking WHERE event_id = $1
         ";
 
@@ -125,77 +124,87 @@ async fn get_event_races(event: i64, pool: &DB) -> Result<Vec<EventRaceInfoRespo
 struct EventResultResponse {
     driver_id: i32,
     event_id: i64,
-    class: String,
-    race: String,
-    rating: Option<i64>,
+    rating: Option<f64>,
     uncertainty: Option<f64>,
     position: i32,
+    start_date: String,
+}
+
+#[derive(Debug, Clone)]
+struct ClassResult {
+    name: String,
+    results: Vec<EventResultResponse>,
 }
 
 #[derive(Debug, Clone)]
 struct EventResult {
     event_id: i64,
-    results: Vec<EventResultResponse>,
+    results: Vec<ClassResult>,
 }
 
-async fn get_event(event: i64, pool: &DB) -> Result<Vec<EventResult>> {
-    let races = get_event_races(event, pool).await?;
-    let mut event_results: Vec<EventResult> = Vec::new();
-    for race in races {
+async fn get_event(event: i64, pool: &DB) -> Result<EventResult> {
+    let classes = get_event_classes(event, pool).await?;
+    let mut race_results: Vec<ClassResult> = Vec::new();
+    for class in classes {
         let query = "
         SELECT
             driver.id as driver_id,
             event_id,
             eor.class as class,
-            race,
             driver.rating,
             driver.uncertainty,
-            position
+            position,
+            event.start_date
         FROM event_overall_ranking eor
         LEFT JOIN driver ON
         eor.class = ANY(driver.source_class)
         AND eor.driver_name = ANY(driver.driver_display_name)
-        WHERE event_id = $1 AND eor.class = $2 AND race = $3
+        LEFT JOIN event ON
+        eor.event_id = event.id
+        WHERE event_id = $1 AND eor.class = $2
         ";
 
-        let class = race.class.clone();
-        let this_race = race.race.clone();
+        let class = class.class.clone();
 
         let race_result = sqlx::query_as::<_, EventResultResponse>(query)
             .bind(event)
-            .bind(class)
-            .bind(this_race)
+            .bind(class.clone())
             .fetch_all(pool)
             .await?;
 
-        event_results.push(EventResult {
-            event_id: event,
+        race_results.push(ClassResult {
+            name: class,
             results: race_result,
         });
     }
-    Ok(event_results)
+    let event_result = EventResult {
+        event_id: event,
+        results: race_results
+    };
+    Ok(event_result)
 }
 
-async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Result<()> {
-    if event_results.is_empty() {
+async fn recalculate_ratings(event_results: EventResult, pool: DB) -> Result<()> {
+    if event_results.results.is_empty() {
         return Ok(());
     }
     info!(
-        "Recalculating ratings for event {}",
-        event_results[0].event_id
+        "Recalculating ratings for event {} for {} classes",
+        event_results.event_id,
+        event_results.results.len()
     );
 
-    for event_result in event_results {
+    for class_result in event_results.results {
         let mut teams_and_ranks: Vec<(Vec<WengLinRating>, MultiTeamOutcome)> = vec![];
         let config = WengLinConfig{
-            beta: 25.0 / 20.0,
-            uncertainty_tolerance: 0.000_001,
+            beta: (class_result.results.len() * 2) as f64,
+            uncertainty_tolerance: 0.001,
         };
         let default_rating = WengLinRating{
-            rating: 500.0,
-            uncertainty: 500.0 / 3.0,
+            rating: 25.0,
+            uncertainty: 25.0 / 3.0,
         };
-        for result in &event_result.results {
+        for result in &class_result.results {
             let mut player_rating: Vec<WengLinRating> = vec![];
             match result.rating {
                 Some(_) => {
@@ -218,19 +227,26 @@ async fn recalculate_ratings(event_results: Vec<EventResult>, pool: DB) -> Resul
                 .collect::<Vec<_>>(),
             &config,
         );
-        update_ratings(&event_result.clone(), &new_ratings, pool.clone()).await?;
+        update_ratings(&class_result.clone(),event_results.event_id.clone(), &new_ratings, pool.clone()).await?;
     }
     Ok(())
 }
 
 async fn update_ratings(
-    event_result: &EventResult,
+    class_result: &ClassResult,
+    event_id: i64,
     new_ratings: &[Vec<WengLinRating>],
     pool: DB,
 ) -> Result<()> {
     for (i, rating) in new_ratings.iter().enumerate() {
-        let driver_id = event_result.results[i].driver_id;
-        let new_rating = rating[0].rating as i64;
+        let driver_id = class_result.results[i].driver_id;
+        let new_driver_rating = calculate_driver_rating(
+            driver_id,
+            class_result.name.clone(),
+            rating[0].rating.clone(),
+            class_result.results[i].start_date.clone(),
+            &pool,
+        ).await?;
         let player_uncertainty = rating[0].uncertainty;
         let query = "
             UPDATE driver
@@ -239,7 +255,7 @@ async fn update_ratings(
             WHERE id = $3
             ";
         sqlx::query(query)
-            .bind(new_rating)
+            .bind(new_driver_rating)
             .bind(player_uncertainty)
             .bind(driver_id)
             .execute(&pool)
@@ -247,10 +263,12 @@ async fn update_ratings(
         log_rating(
             RatingLogRequest {
                 driver_id,
-                event_id: event_result.event_id,
-                rating: new_rating,
+                event_id,
+                event_start_date: class_result.results[i].start_date.clone(),
+                event_rating: rating[0].rating.clone(),
+                driver_rating: new_driver_rating,
                 uncertainty: player_uncertainty,
-                class: event_result.results[i].class.clone(),
+                class: class_result.name.clone(),
                 rating_ts: chrono::Utc::now(),
             },
             &pool,
@@ -260,10 +278,49 @@ async fn update_ratings(
     Ok(())
 }
 
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+struct RollingDriverRatingResponse {
+    event_rating: f64
+}
+
+async fn calculate_driver_rating(
+    driver_id: i32,
+    class: String,
+    latest_event_rating: f64,
+    latest_event_date: String,
+    pool: &DB,
+) -> Result<f64> {
+    let query = "
+        SELECT
+            dr.event_rating
+        FROM driver_ratings dr
+        WHERE dr.driver_id = $2
+        AND TO_DATE(dr.event_start_date, 'YYYY-MM-DD') >= TO_DATE($3, 'YYYY-MM-DD') - INTERVAL '1 year'
+        AND TO_DATE(dr.event_start_date, 'YYYY-MM-DD') < TO_DATE($3, 'YYYY-MM-DD')
+        ";
+    let rolling_year_average = sqlx::query_as::<_, RollingDriverRatingResponse>(query)
+        .bind(class)
+        .bind(driver_id)
+        .bind(latest_event_date.clone())
+        .fetch_all(pool)
+        .await?;
+    let mut ratings: Vec<f64> = rolling_year_average.into_iter().map(|r| r.event_rating).collect();
+
+    ratings.push(latest_event_rating);
+
+    let sum: f64 = ratings.iter().sum();
+    let count = ratings.len() as f64;
+    let average = sum / count;
+
+    Ok(average)
+}
+
 struct RatingLogRequest {
     driver_id: i32,
     event_id: i64,
-    rating: i64,
+    event_start_date: String,
+    event_rating: f64,
+    driver_rating: f64,
     uncertainty: f64,
     class: String,
     rating_ts: chrono::DateTime<chrono::Utc>,
@@ -271,13 +328,15 @@ struct RatingLogRequest {
 
 async fn log_rating(request: RatingLogRequest, pool: &DB) -> Result<()> {
     let query = "
-        INSERT INTO driver_ratings (driver_id, event_id, rating, uncertainty, class, rating_ts)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO driver_ratings (driver_id, event_id, event_start_date, event_rating, driver_rating, uncertainty, class, rating_ts)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ";
     sqlx::query(query)
         .bind(request.driver_id)
         .bind(request.event_id)
-        .bind(request.rating)
+        .bind(request.event_start_date)
+        .bind(request.event_rating)
+        .bind(request.driver_rating)
         .bind(request.uncertainty)
         .bind(request.class)
         .bind(request.rating_ts)
